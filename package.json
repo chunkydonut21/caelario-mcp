@@ -1,0 +1,55 @@
+{
+  "name": "caelario-mcp",
+  "version": "0.1.5",
+  "mcpName": "io.github.chunkydonut21/caelario",
+  "description": "MCP server for social media data from Instagram, TikTok, YouTube, X and Facebook. Run extractions, batches, schedules, saved results and usage workflows through Caelario.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://caelario.com/mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chunkydonut21/caelario-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chunkydonut21/caelario-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "caelario-mcp": "bin/caelario-mcp.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "server.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "pack:check": "npm pack --dry-run --cache .npm-cache"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
+  },
+  "keywords": [
+    "caelario",
+    "mcp",
+    "model-context-protocol",
+    "social-data",
+    "instagram",
+    "tiktok",
+    "youtube",
+    "facebook",
+    "twitter",
+    "codex",
+    "claude"
+  ]
+}
