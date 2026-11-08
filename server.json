@@ -9,18 +9,18 @@
     "source": "github",
     "id": "1346708115"
   },
-  "version": "0.1.6",
+  "version": "0.1.7",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "caelario-mcp",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "description": "A revocable Caelario workspace API key from the Developers page.",
+          "description": "Get your Caelario account and connection key at https://app.caelario.com/connect. The browser setup guides you through registration and connection.",
           "isRequired": true,
           "format": "string",
           "isSecret": true,

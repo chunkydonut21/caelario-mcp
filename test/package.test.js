@@ -5,7 +5,9 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { fileURLToPath } from "node:url";
-import { registrationCommand } from "../src/install.js";
+import { registrationCommand, installClient } from "../src/install.js";
+import { SETUP_URL, verifyWorkspaceKey } from "../src/onboarding.js";
+import { spawnSync } from "node:child_process";
 
 test("package and MCP Registry metadata identify the same server", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -18,7 +20,7 @@ test("package and MCP Registry metadata identify the same server", async () => {
   assert.equal(serverJson.packages[0].version, packageJson.version);
   assert.equal(serverJson.packages[0].transport.type, "stdio");
   assert.deepEqual(serverJson.packages[0].environmentVariables, [{
-    description: "A revocable Caelario workspace API key from the Developers page.",
+    description: "Get your Caelario account and connection key at https://app.caelario.com/connect. The browser setup guides you through registration and connection.",
     isRequired: true,
     format: "string",
     isSecret: true,
@@ -189,5 +191,85 @@ test("failed result pages retain the reason and never claim readiness", async ()
 test("installer rejects shell metacharacters and non-HTTP API origins", () => {
   for (const url of ["https://api.example&example.com", "https://api.example%25.com", "ftp://localhost"]) {
     assert.throws(() => registrationCommand("codex", "cae_test_1234567890", url, "win32"));
+  }
+});
+
+
+test("first install opens the guided setup and verifies the key before registration", async () => {
+  const steps = [];
+  const output = [];
+  const secret = "cae_test_1234567890";
+  await installClient("codex", {
+    apiKey: "", interactive: true, platform: "linux",
+    write: (text) => output.push(text),
+    openBrowser: () => steps.push("browser"),
+    prompt: async () => { steps.push("prompt"); return secret; },
+    verifyKey: async (key) => { assert.equal(key, secret); steps.push("verify"); },
+    spawn: (command, args) => { assert.equal(command, "codex"); assert.ok(args.includes(`CAELARIO_API_KEY=${secret}`)); steps.push("register"); return { status: 0 }; },
+  });
+  assert.deepEqual(steps, ["browser", "prompt", "verify", "register"]);
+  assert.ok(output.join("").includes(SETUP_URL));
+  assert.ok(!output.join("").includes(secret));
+});
+
+test("invalid connection key never writes the client configuration", async () => {
+  let registered = false;
+  await assert.rejects(installClient("claude", {
+    apiKey: "cae_test_1234567890", write: () => {},
+    verifyKey: async () => { throw new Error("Key was rejected"); },
+    spawn: () => { registered = true; return { status: 0 }; },
+  }), /Key was rejected/);
+  assert.equal(registered, false);
+});
+
+test("help and missing-key errors guide unregistered users to setup without spending credits", async () => {
+  const help = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/caelario-mcp.js", import.meta.url)), "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.ok(help.stderr.includes(SETUP_URL));
+  assert.ok(help.stderr.includes("Create a free account"));
+  assert.equal(help.stdout, "");
+  let requests = 0;
+  await withTestMcp((req, res) => { requests++; res.end("{}"); }, async (client) => {
+    const result = await client.callTool({ name: "get_account", arguments: {} });
+    assert.equal(result.isError, true);
+    assert.ok(result.content[0].text.includes(SETUP_URL));
+    assert.ok(result.content[0].text.includes("never into chat"));
+  }, { CAELARIO_API_KEY: "" });
+  assert.equal(requests, 0);
+});
+
+test("credit estimate respects unavailable operations from the live catalog", async () => {
+  await withTestMcp((req, res) => {
+    assert.equal(req.method, "GET");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify([{ platform: "tiktok", operations: [{ operation: "search", available: false, unavailable_reason: "Temporarily unavailable" }] }]));
+  }, async (client) => {
+    const result = await client.callTool({ name: "estimate_credits", arguments: { platform: "tiktok", operation: "search" } });
+    assert.equal(result.isError, true);
+    assert.equal(JSON.parse(result.content[0].text).error, "operation_unavailable");
+  });
+});
+
+
+test("installer checks the workspace endpoint and rejects invalid keys or responses", async () => {
+  let status = 200;
+  let payload = JSON.stringify({ organization_id: "test-workspace" });
+  const server = http.createServer((req, res) => {
+    assert.equal(req.url, "/v1/account");
+    assert.equal(req.headers["x-api-key"], "cae_test_1234567890");
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(payload);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await verifyWorkspaceKey("cae_test_1234567890", url);
+    status = 401;
+    await assert.rejects(verifyWorkspaceKey("cae_test_1234567890", url), /did not accept/);
+    status = 200; payload = "<html>not the API</html>";
+    await assert.rejects(verifyWorkspaceKey("cae_test_1234567890", url), /unexpected response/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
   }
 });

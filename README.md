@@ -10,16 +10,26 @@ The official local server gives Codex and Claude Code typed tools for capability
 discovery, immediate and durable extraction, result pagination, and credit
 estimates.
 
+## New to Caelario?
+
+[Open the guided setup](https://app.caelario.com/connect). Create a free account
+with Google or email, choose Codex or Claude Code, and create a connection key.
+The page shows each step and helps you check the connection. New accounts start
+with 200 free credits.
+
+The installer opens this setup page automatically when you do not already have
+a key. Paste the key only into its secure terminal prompt, never into AI chat.
+
 ## Install for Codex
 
 ```bash
-npx -y caelario-mcp install codex
+npx -y caelario-mcp@latest install codex
 ```
 
 ## Install for Claude Code
 
 ```bash
-npx -y caelario-mcp install claude
+npx -y caelario-mcp@latest install claude
 ```
 
 The installer prompts for a Caelario workspace API key and registers the stdio

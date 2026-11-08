@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { SETUP_URL } from "./onboarding.js";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -13,7 +14,7 @@ const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 
 function apiConfiguration() {
   const apiKey = (process.env.CAELARIO_API_KEY || "").trim();
-  if (!apiKey) throw new Error("CAELARIO_API_KEY is required; run `npx -y caelario-mcp install codex` or `install claude`");
+  if (!apiKey) throw new Error(`Create a free Caelario account and connection key at ${SETUP_URL}, then run npx -y caelario-mcp@latest install codex (or install claude). Paste the key into the installer, never into chat.`);
   const baseUrl = new URL(process.env.CAELARIO_API_URL || "https://api.caelario.com");
   if (!["https:", "http:"].includes(baseUrl.protocol)) throw new Error("CAELARIO_API_URL requires HTTP or HTTPS");
   if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(baseUrl.hostname)) {
@@ -55,6 +56,7 @@ async function api(method, path, { body, params, idempotencyKey } = {}) {
         Accept: "application/json",
         "Content-Type": "application/json",
         "X-API-Key": apiKey,
+        "User-Agent": `caelario-mcp/${VERSION}`,
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -84,6 +86,7 @@ async function api(method, path, { body, params, idempotencyKey } = {}) {
     throw new ApiError(`Caelario API request failed (${response.status})${safeMessage ? `: ${safeMessage}` : ""}`, {
       error: typeof code === "string" && /^[a-z0-9_]{1,64}$/.test(code) ? code : "api_request_failed",
       status_code: response.status, retryable: Boolean(detail?.retryable),
+      ...([401, 403].includes(response.status) ? { setup_url: SETUP_URL } : {}),
       outcome_unknown: false, ...(jobId ? { job_id: jobId } : {}), ...recovery,
     });
   }
@@ -164,7 +167,7 @@ const extractionSchema = z.object({
 export function createServer() {
   const server = new McpServer(
     { name: "Caelario", version: VERSION },
-    { instructions: "Use discover_platforms and get_operation_guide before unfamiliar or expensive work. Prefer extract_now for one bounded target. Use durable jobs or batches for larger work, then wait and page the result. Only a Caelario workspace API key is needed; never ask users for social-network credentials." },
+    { instructions: "For first-time setup or a missing connection key, direct the user to https://app.caelario.com/connect to create an account and follow the browser setup. Never ask them to paste the key into chat. Use discover_platforms and get_operation_guide before unfamiliar or expensive work. Prefer extract_now for one bounded target. Use durable jobs or batches for larger work, then wait and page the result. Only a Caelario workspace API key is needed; never ask users for social-network credentials." },
   );
   const tool = (name, description, inputSchema, handler) => server.registerTool(name, { description, inputSchema }, async (input) => {
     try {
@@ -186,6 +189,7 @@ export function createServer() {
   tool("estimate_credits", "Estimate the maximum reservation for one or many targets before starting work.", z.object({ platform, operation, limit: z.number().int().min(1).max(25_000).default(12), include_posts: z.number().int().min(0).max(200).default(0), target_count: z.number().int().min(1).max(100).default(1) }), async (input) => {
     const catalog = await api("GET", "/v1/platforms");
     const { definition, capability } = capabilityFor(catalog, input.platform, input.operation);
+    if (capability.available === false) throw new ApiError(capability.unavailable_reason || "This operation is temporarily unavailable.", { error: "operation_unavailable", retryable: false });
     const single = new Set(["profile", "post", "video", "transcript", "adlibrary_ad", "adlibrary_ad_transcript", "profile_analytics", "playlist"]);
     const fixedCollection = input.platform.toLowerCase() === "instagram" && new Set(["highlights", "highlight_items", "stories"]).has(input.operation);
     const normalizedLimit = single.has(input.operation) ? 1 : fixedCollection ? capability.max_results : input.limit;

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import readline from "node:readline";
+import { SETUP_URL, setupInstructions, openSetupPage, verifyWorkspaceKey } from "./onboarding.js";
 
 const CLIENTS = new Set(["codex", "claude"]);
 const KEY_PATTERN = /^[A-Za-z0-9._-]{16,256}$/;
@@ -40,11 +41,26 @@ export async function installClient(
     apiUrl = process.env.CAELARIO_API_URL || "https://api.caelario.com",
     platform = process.platform,
     spawn = spawnSync,
+    openBrowser = openSetupPage,
+    prompt = promptSecret,
+    verifyKey = verifyWorkspaceKey,
+    write = (text) => process.stderr.write(text),
+    interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   } = {},
 ) {
   if (!CLIENTS.has(client)) throw new Error("client must be codex or claude");
-  const key = apiKey?.trim() || await promptSecret("Paste your Caelario API key: ");
+  let key = apiKey?.trim();
+  if (!key) {
+    write(`${setupInstructions(client)}\n\n`);
+    if (interactive) {
+      write("Opening your browser setup page...\n");
+      openBrowser();
+    }
+    key = await prompt("Finish setup in your browser, then paste your connection key here: ");
+  }
   const registration = registrationCommand(client, key, apiUrl, platform);
+  write("Checking your Caelario connection key...\n");
+  await verifyKey(key, apiUrl);
   const completed = spawn(registration.command, registration.args, {
     stdio: "inherit",
     windowsHide: true,
@@ -53,16 +69,16 @@ export async function installClient(
   if (completed.error?.code === "ENOENT") {
     throw new Error(`${client === "codex" ? "Codex" : "Claude Code"} CLI was not found. Install it, then run this command again.`);
   }
-  if (completed.error) throw completed.error;
+  if (completed.error) throw new Error("The assistant client could not be started. Check its installation and run this command again.");
   if (completed.status !== 0) {
     throw new Error(`${client === "codex" ? "Codex" : "Claude Code"} rejected the MCP registration (exit ${completed.status ?? "unknown"})`);
   }
-  process.stderr.write(`Caelario is connected to ${client === "codex" ? "Codex" : "Claude Code"}. Restart the client, then ask it to use Caelario.\n`);
+  write(`Caelario is connected to ${client === "codex" ? "Codex" : "Claude Code"}. Restart the client, then ask it to use Caelario.\n`);
 }
 
 async function promptSecret(prompt) {
   if (!process.stdin.isTTY || !process.stderr.isTTY) {
-    throw new Error("set CAELARIO_API_KEY when running the installer non-interactively");
+    throw new Error(`Open ${SETUP_URL} to create your account and connection key. Run the installer in an interactive terminal, or set CAELARIO_API_KEY in your private MCP configuration.`);
   }
   process.stderr.write(prompt);
   process.stdin.setRawMode?.(true);
@@ -100,7 +116,7 @@ export function printHelp() {
     "  npx -y caelario-mcp install claude  Register for Claude Code (user-wide)",
     "  npx -y caelario-mcp serve           Run the stdio server",
     "",
-    "The guided installer securely prompts for CAELARIO_API_KEY.",
+    setupInstructions(),
   ];
   readline.clearLine(process.stderr, 0);
   process.stderr.write(`${output.join("\n")}\n`);
