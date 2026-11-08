@@ -9,7 +9,9 @@ export function registrationCommand(client, apiKey, apiUrl = "https://api.caelar
   if (!CLIENTS.has(client)) throw new Error("client must be codex or claude");
   if (!KEY_PATTERN.test(apiKey)) throw new Error("the Caelario API key format is invalid");
   const origin = new URL(apiUrl);
-  if (origin.protocol !== "https:" && origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1") {
+  if (!["http:", "https:"].includes(origin.protocol)) throw new Error("the Caelario API URL requires HTTP or HTTPS");
+  if (/[&|<>^%!()\r\n]/.test(origin.origin)) throw new Error("the Caelario API origin contains unsafe launcher characters");
+  if (origin.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)) {
     throw new Error("the Caelario API URL must use HTTPS");
   }
   if (origin.pathname !== "/" || origin.search || origin.hash || origin.username || origin.password) {

@@ -33,6 +33,11 @@ After installation, restart the client and ask:
 The package requires Node.js 20 or newer. See
 <https://caelario.com/mcp-server> for security, billing, and tool details.
 
+If a request times out, reuse the `idempotency_key` returned in the tool error
+with identical arguments. This recovers the original request instead of starting
+another paid extraction. The default HTTP timeout is 120 seconds; failed job
+results include their error and remain marked as not ready.
+
 The connector is released under the MIT License. Caelario's hosted API,
 provider implementations, acquisition infrastructure, and managed identities
 are separate proprietary services and are not included in this package.

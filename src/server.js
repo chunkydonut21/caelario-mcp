@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 
+const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const operation = z.string().min(1).max(64).describe("Operation returned by discover_platforms");
 const platform = z.string().min(1).max(32).describe("Platform returned by discover_platforms");
@@ -13,7 +15,8 @@ function apiConfiguration() {
   const apiKey = (process.env.CAELARIO_API_KEY || "").trim();
   if (!apiKey) throw new Error("CAELARIO_API_KEY is required; run `npx -y caelario-mcp install codex` or `install claude`");
   const baseUrl = new URL(process.env.CAELARIO_API_URL || "https://api.caelario.com");
-  if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "::1"].includes(baseUrl.hostname)) {
+  if (!["https:", "http:"].includes(baseUrl.protocol)) throw new Error("CAELARIO_API_URL requires HTTP or HTTPS");
+  if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(baseUrl.hostname)) {
     throw new Error("CAELARIO_API_URL requires HTTPS except on loopback");
   }
   if (baseUrl.pathname !== "/" || baseUrl.search || baseUrl.hash || baseUrl.username || baseUrl.password) {
@@ -22,30 +25,67 @@ function apiConfiguration() {
   return { apiKey, baseUrl: baseUrl.origin };
 }
 
+class ApiError extends Error {
+  constructor(message, metadata = {}) {
+    super(message);
+    this.metadata = metadata;
+  }
+}
+
 async function api(method, path, { body, params, idempotencyKey } = {}) {
   const { apiKey, baseUrl } = apiConfiguration();
+  const timeout = Number(process.env.CAELARIO_MCP_TIMEOUT_MS || 120_000);
+  if (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 2_147_483_647) {
+    throw new Error("CAELARIO_MCP_TIMEOUT_MS must be a positive integer");
+  }
   const url = new URL(path, `${baseUrl}/`);
   for (const [key, value] of Object.entries(params || {})) {
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
   }
-  const response = await fetch(url, {
-    method,
-    redirect: "manual",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-API-Key": apiKey,
-      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(Number(process.env.CAELARIO_MCP_TIMEOUT_MS || 30_000)),
-  });
-  const payload = response.status === 204 ? null : await response.json().catch(() => null);
+  const recovery = idempotencyKey ? {
+    idempotency_key: idempotencyKey,
+    retry_instruction: "Use this idempotency_key with identical arguments to recover the original request; check its job status before starting a new request.",
+  } : {};
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      redirect: "manual",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey,
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch {
+    throw new ApiError("The Caelario API request could not complete. Its outcome is unknown.", {
+      error: "api_transport_error", retryable: true, outcome_unknown: true, ...recovery,
+    });
+  }
+  if (response.status === 204) return null;
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ApiError("The Caelario API returned an invalid response. Check the request before retrying.", {
+      error: "invalid_api_response", status_code: response.status,
+      retryable: true, outcome_unknown: Boolean(idempotencyKey), ...recovery,
+    });
+  }
   if (!response.ok) {
     const detail = payload?.detail;
     const code = typeof detail === "object" ? detail?.error : undefined;
     const message = typeof detail === "object" ? detail?.message : typeof detail === "string" ? detail : undefined;
-    throw new Error(`Caelario API request failed (${response.status}${code ? `, ${code}` : ""})${message ? `: ${message}` : ""}`);
+    const safeMessage = typeof message === "string" ? message.replaceAll(apiKey, "[redacted]") : undefined;
+    const jobId = typeof detail?.job_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(detail.job_id) ? detail.job_id : undefined;
+    throw new ApiError(`Caelario API request failed (${response.status})${safeMessage ? `: ${safeMessage}` : ""}`, {
+      error: typeof code === "string" && /^[a-z0-9_]{1,64}$/.test(code) ? code : "api_request_failed",
+      status_code: response.status, retryable: Boolean(detail?.retryable),
+      outcome_unknown: false, ...(jobId ? { job_id: jobId } : {}), ...recovery,
+    });
   }
   return payload;
 }
@@ -99,7 +139,7 @@ function pagedResult(job, offset, limit, textOffset, textLimit) {
       }
     }
   }
-  return { job_id: job.id, status: job.status, ready: job.status === "completed" && job.result != null, result_count: job.result_count, billed_credits: job.billed_credits, source_exhausted: Boolean(job.source_exhausted), next_cursor: job.next_cursor ?? null, result, pagination };
+  return { job_id: job.id, status: job.status, error: job.error ?? null, request_cursor: job.request_cursor ?? null, ready: job.status === "completed" && job.result != null, result_count: job.result_count, billed_credits: job.billed_credits, source_exhausted: Boolean(job.source_exhausted), next_cursor: job.next_cursor ?? null, result, pagination };
 }
 
 function pageInfo(total, offset, limit) {
@@ -123,10 +163,17 @@ const extractionSchema = z.object({
 
 export function createServer() {
   const server = new McpServer(
-    { name: "Caelario", version: "0.1.0" },
+    { name: "Caelario", version: VERSION },
     { instructions: "Use discover_platforms and get_operation_guide before unfamiliar or expensive work. Prefer extract_now for one bounded target. Use durable jobs or batches for larger work, then wait and page the result. Only a Caelario workspace API key is needed; never ask users for social-network credentials." },
   );
-  const tool = (name, description, inputSchema, handler) => server.registerTool(name, { description, inputSchema }, async (input) => response(await handler(input)));
+  const tool = (name, description, inputSchema, handler) => server.registerTool(name, { description, inputSchema }, async (input) => {
+    try {
+      return response(await handler(input));
+    } catch (error) {
+      const failure = { message: error.message, ...(error instanceof ApiError ? error.metadata : { error: "mcp_request_failed" }) };
+      return { isError: true, content: [{ type: "text", text: JSON.stringify(failure) }] };
+    }
+  });
 
   tool("discover_platforms", "List every Caelario platform, operation, limit, and price.", z.object({}), () => api("GET", "/v1/platforms"));
   tool("get_operation_guide", "Explain and validate one operation before spending credits.", z.object({ platform, operation }), async (input) => {

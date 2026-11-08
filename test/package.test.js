@@ -99,3 +99,95 @@ test("credit estimates match backend profile bundle reservation rules", async ()
     await new Promise((resolve) => api.close(resolve));
   }
 });
+
+
+async function withTestMcp(handler, run, extraEnv = {}) {
+  const api = http.createServer(handler);
+  await new Promise((resolve) => api.listen(0, "127.0.0.1", resolve));
+  const client = new Client({ name: "caelario-reliability-test", version: "0.1.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [fileURLToPath(new URL("../bin/caelario-mcp.js", import.meta.url)), "serve"],
+    env: { ...process.env, CAELARIO_API_KEY: "cae_test_1234567890", CAELARIO_API_URL: `http://127.0.0.1:${api.address().port}`, ...extraEnv },
+  });
+  try {
+    await client.connect(transport);
+    await run(client);
+  } finally {
+    await client.close();
+    api.closeAllConnections();
+    await new Promise((resolve) => api.close(resolve));
+  }
+}
+
+test("uncertain MCP write returns the exact retry key without leaking transport details", async () => {
+  let received;
+  await withTestMcp((req, res) => {
+    received = req.headers["idempotency-key"];
+    setTimeout(() => { if (!res.destroyed) res.end("{}"); }, 150);
+  }, async (client) => {
+    const result = await client.callTool({ name: "extract_now", arguments: {
+      platform: "instagram", operation: "profile", target: "test", idempotency_key: "repeat-identical-request",
+    } });
+    assert.equal(result.isError, true);
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(error.error, "api_transport_error");
+    assert.equal(error.idempotency_key, "repeat-identical-request");
+    assert.equal(received, error.idempotency_key);
+    assert.equal(error.outcome_unknown, true);
+    assert.equal(error.retryable, true);
+    assert.ok(!result.content[0].text.includes("cae_test_1234567890"));
+  }, { CAELARIO_MCP_TIMEOUT_MS: "40" });
+});
+
+test("HTTP failure retains job recovery metadata and redacts the API key", async () => {
+  await withTestMcp((req, res) => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ detail: {
+      error: "egress_unavailable", job_id: "job-safe", retryable: true,
+      message: "unavailable cae_test_1234567890", internal: "must not be exposed",
+    } }));
+  }, async (client) => {
+    const result = await client.callTool({ name: "extract_now", arguments: {
+      platform: "facebook", operation: "profile", target: "test", idempotency_key: "same-key",
+    } });
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(result.isError, true);
+    assert.equal(error.job_id, "job-safe");
+    assert.equal(error.idempotency_key, "same-key");
+    assert.equal(error.outcome_unknown, false);
+    assert.ok(!result.content[0].text.includes("cae_test_1234567890"));
+    assert.ok(!result.content[0].text.includes("must not be exposed"));
+  });
+});
+
+test("successful HTTP with invalid JSON preserves uncertain-write recovery", async () => {
+  await withTestMcp((req, res) => res.end("not-json"), async (client) => {
+    const result = await client.callTool({ name: "create_extraction", arguments: {
+      platform: "instagram", operation: "profile", target: "test", idempotency_key: "recover-this-request",
+    } });
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(result.isError, true);
+    assert.equal(error.error, "invalid_api_response");
+    assert.equal(error.idempotency_key, "recover-this-request");
+    assert.equal(error.outcome_unknown, true);
+  });
+});
+
+test("failed result pages retain the reason and never claim readiness", async () => {
+  await withTestMcp((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "failed-job", status: "failed", result: null,
+      error: { error: "egress_unavailable", retryable: true } }));
+  }, async (client) => {
+    const result = await client.callTool({ name: "get_extraction_result", arguments: { job_id: "failed-job" } });
+    assert.equal(result.structuredContent.result.ready, false);
+    assert.equal(result.structuredContent.result.error.error, "egress_unavailable");
+  });
+});
+
+test("installer rejects shell metacharacters and non-HTTP API origins", () => {
+  for (const url of ["https://api.example&example.com", "https://api.example%25.com", "ftp://localhost"]) {
+    assert.throws(() => registrationCommand("codex", "cae_test_1234567890", url, "win32"));
+  }
+});
