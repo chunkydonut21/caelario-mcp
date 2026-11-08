@@ -18,7 +18,9 @@ The page shows each step and helps you check the connection. New accounts start
 with 200 free credits.
 
 The installer opens this setup page automatically when you do not already have
-a key. Paste the key only into its secure terminal prompt, never into AI chat.
+a key, or when the key in your terminal environment is rejected. It lets you
+replace a rejected or incomplete key without restarting the command. Paste the
+key only into its secure terminal prompt, never into AI chat.
 
 ## Install for Codex
 
@@ -32,8 +34,10 @@ npx -y caelario-mcp@latest install codex
 npx -y caelario-mcp@latest install claude
 ```
 
-The installer prompts for a Caelario workspace API key and registers the stdio
-server at user scope. It does not ask for Instagram, TikTok, YouTube, X, or
+The installer finds your assistant before starting setup. On Windows it also
+finds the Codex desktop app when `codex` is absent from your terminal PATH. It
+prompts for a Caelario workspace API key and registers the stdio server at user
+scope. It does not ask for Instagram, TikTok, YouTube, X, or
 Facebook credentials; provider identities are managed by Caelario.
 
 After installation, restart the client and ask:

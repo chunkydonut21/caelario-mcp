@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import readline from "node:readline";
-import { SETUP_URL, setupInstructions, openSetupPage, verifyWorkspaceKey } from "./onboarding.js";
+import { resolveClientExecutable } from "./client.js";
+import { SETUP_URL, setupInstructions, openSetupPage, verifyWorkspaceKey, ConnectionKeyRejectedError } from "./onboarding.js";
 
 const CLIENTS = new Set(["codex", "claude"]);
 const KEY_PATTERN = /^[A-Za-z0-9._-]{16,256}$/;
@@ -41,6 +42,7 @@ export async function installClient(
     apiUrl = process.env.CAELARIO_API_URL || "https://api.caelario.com",
     platform = process.platform,
     spawn = spawnSync,
+    resolveClient = resolveClientExecutable,
     openBrowser = openSetupPage,
     prompt = promptSecret,
     verifyKey = verifyWorkspaceKey,
@@ -49,25 +51,57 @@ export async function installClient(
   } = {},
 ) {
   if (!CLIENTS.has(client)) throw new Error("client must be codex or claude");
+  write(`Finding ${client === "codex" ? "Codex" : "Claude Code"}...\n`);
+  const executable = resolveClient(client, { platform });
   let key = apiKey?.trim();
-  if (!key) {
-    write(`${setupInstructions(client)}\n\n`);
-    if (interactive) {
-      write("Opening your browser setup page...\n");
-      openBrowser();
+  let setupShown = false;
+  let registration;
+  if (key) write("Found CAELARIO_API_KEY in your environment.\n");
+  while (true) {
+    if (!key) {
+      if (!setupShown) {
+        write(`${setupInstructions(client)}\n\n`);
+        if (interactive) {
+          write("Opening your browser setup page...\n");
+          openBrowser();
+        }
+        setupShown = true;
+      }
+      if (!interactive) {
+        throw new Error(`Open ${SETUP_URL} to create your account and connection key. Run the installer in an interactive terminal, or set CAELARIO_API_KEY in your private MCP configuration.`);
+      }
+      key = (await prompt("Finish setup in your browser, then paste your connection key here: ")).trim();
     }
-    key = await prompt("Finish setup in your browser, then paste your connection key here: ");
+    if (!KEY_PATTERN.test(key)) {
+      if (!interactive) throw new Error(`The connection key format is invalid. Get your full key at ${SETUP_URL}.`);
+      write("That connection key is incomplete or has an invalid format. Paste the full key from browser setup.\n");
+      key = "";
+      continue;
+    }
+    // Validate the origin before sending a key, even when setup needs a retry.
+    registration = registrationCommand(client, key, apiUrl, platform);
+    write("Checking your Caelario connection key...\n");
+    try {
+      await verifyKey(key, apiUrl);
+      break;
+    } catch (error) {
+      if (!(error instanceof ConnectionKeyRejectedError) || !interactive) throw error;
+      write("Caelario did not accept that key. Let's connect with a current key from browser setup.\n");
+      key = "";
+    }
   }
-  const registration = registrationCommand(client, key, apiUrl, platform);
-  write("Checking your Caelario connection key...\n");
-  await verifyKey(key, apiUrl);
-  const completed = spawn(registration.command, registration.args, {
-    stdio: "inherit",
+  const completed = spawn(executable.command, registration.args, {
+    stdio: "pipe",
+    encoding: "utf8",
     windowsHide: true,
-    shell: platform === "win32",
+    timeout: 30_000,
+    shell: executable.shell,
   });
+  for (const output of [completed.stdout, completed.stderr]) {
+    if (output) write(output.replaceAll(key, "[redacted]"));
+  }
   if (completed.error?.code === "ENOENT") {
-    throw new Error(`${client === "codex" ? "Codex" : "Claude Code"} CLI was not found. Install it, then run this command again.`);
+    throw new Error(`${client === "codex" ? "Codex" : "Claude Code"} was not found. Reopen your terminal and run this command again.`);
   }
   if (completed.error) throw new Error("The assistant client could not be started. Check its installation and run this command again.");
   if (completed.status !== 0) {

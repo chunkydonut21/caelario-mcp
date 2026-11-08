@@ -1,6 +1,6 @@
 {
   "name": "caelario-mcp",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "mcpName": "io.github.chunkydonut21/caelario",
   "description": "MCP server for social media data from Instagram, TikTok, YouTube, X and Facebook. Run extractions, batches, schedules, saved results and usage workflows through Caelario.",
   "type": "module",

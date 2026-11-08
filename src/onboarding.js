@@ -27,6 +27,13 @@ export function openSetupPage() {
   } catch { /* The printed URL remains usable when a browser cannot be opened. */ }
 }
 
+export class ConnectionKeyRejectedError extends Error {
+  constructor() {
+    super(`Caelario did not accept that key. Open ${SETUP_URL}, copy your full connection key and try again.`);
+    this.name = "ConnectionKeyRejectedError";
+  }
+}
+
 export async function verifyWorkspaceKey(apiKey, apiUrl) {
   let response;
   try {
@@ -39,7 +46,7 @@ export async function verifyWorkspaceKey(apiKey, apiUrl) {
     throw new Error("Could not reach Caelario to check the key. Check your connection and run the installer again.");
   }
   if (response.status === 401 || response.status === 403) {
-    throw new Error(`Caelario did not accept that key. Open ${SETUP_URL}, copy your full connection key and try again.`);
+    throw new ConnectionKeyRejectedError();
   }
   if (!response.ok) throw new Error("Caelario could not verify the key right now. Please try again shortly.");
   const account = await response.json().catch(() => null);
