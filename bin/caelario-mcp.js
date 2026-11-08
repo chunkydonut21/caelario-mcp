@@ -8,7 +8,7 @@ const [command = "serve", client] = process.argv.slice(2);
 try {
   if (command === "serve") {
     await runServer();
-  } else if (command === "install" && (client === "codex" || client === "claude")) {
+  } else if (command === "install" && ["codex", "claude", "claude-desktop"].includes(client)) {
     await installClient(client);
   } else if (command === "--help" || command === "-h" || command === "help") {
     printHelp();

@@ -28,11 +28,26 @@ key only into its secure terminal prompt, never into AI chat.
 npx -y caelario-mcp@latest install codex
 ```
 
-## Install for Claude Code
+## Install for Claude Code (terminal or desktop)
 
 ```bash
 npx -y caelario-mcp@latest install claude
 ```
+
+The installer uses the terminal CLI when available. If it is missing, it detects
+Claude desktop and configures its local MCP settings directly, including support
+for local Code tab sessions. You do not need to install a separate CLI.
+
+To choose Claude desktop explicitly (also for its regular chat surface), run:
+
+```bash
+npx -y caelario-mcp@latest install claude-desktop
+```
+
+Quit Claude completely and reopen it after installation. Approve Caelario when
+Claude asks, then ask it to check your connection and available credits.
+Existing desktop settings and other MCP servers are preserved. If the settings
+file is malformed, the installer stops without overwriting it.
 
 The installer finds your assistant before starting setup. On Windows it also
 finds the Codex desktop app when `codex` is absent from your terminal PATH. It

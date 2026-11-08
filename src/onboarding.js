@@ -4,7 +4,7 @@ export const SETUP_URL = "https://app.caelario.com/connect";
 export const SIGNUP_URL = "https://app.caelario.com/sign-up";
 
 export function setupInstructions(client = "codex") {
-  const label = client === "claude" ? "Claude Code" : "Codex";
+  const label = client === "claude-desktop" ? "Claude desktop" : client === "claude" ? "Claude Code" : "Codex";
   return [
     "Caelario connects social media data to your AI assistant.",
     "",

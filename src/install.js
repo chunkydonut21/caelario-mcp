@@ -2,32 +2,21 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import readline from "node:readline";
 import { resolveClientExecutable } from "./client.js";
+import { connectionConfiguration, KEY_PATTERN } from "./connection.js";
+import { checkClaudeDesktopConfiguration, configureClaudeDesktop } from "./desktop.js";
 import { SETUP_URL, setupInstructions, openSetupPage, verifyWorkspaceKey, ConnectionKeyRejectedError } from "./onboarding.js";
 
 const CLIENTS = new Set(["codex", "claude"]);
-const KEY_PATTERN = /^[A-Za-z0-9._-]{16,256}$/;
 
 export function registrationCommand(client, apiKey, apiUrl = "https://api.caelario.com", platform = process.platform) {
   if (!CLIENTS.has(client)) throw new Error("client must be codex or claude");
-  if (!KEY_PATTERN.test(apiKey)) throw new Error("the Caelario API key format is invalid");
-  const origin = new URL(apiUrl);
-  if (!["http:", "https:"].includes(origin.protocol)) throw new Error("the Caelario API URL requires HTTP or HTTPS");
-  if (/[&|<>^%!()\r\n]/.test(origin.origin)) throw new Error("the Caelario API origin contains unsafe launcher characters");
-  if (origin.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)) {
-    throw new Error("the Caelario API URL must use HTTPS");
-  }
-  if (origin.pathname !== "/" || origin.search || origin.hash || origin.username || origin.password) {
-    throw new Error("the Caelario API URL must contain only an origin");
-  }
-
-  const launcher = platform === "win32"
-    ? ["cmd", "/c", "npx", "-y", "caelario-mcp", "serve"]
-    : ["npx", "-y", "caelario-mcp", "serve"];
+  const connection = connectionConfiguration(apiKey, apiUrl, platform);
+  const launcher = [connection.command, ...connection.args];
   const common = [
     "mcp", "add",
     ...(client === "claude" ? ["--scope", "user"] : []),
     "caelario",
-    "--env", `CAELARIO_API_URL=${origin.origin}`,
+    "--env", `CAELARIO_API_URL=${connection.env.CAELARIO_API_URL}`,
     "--env", `CAELARIO_API_KEY=${apiKey}`,
     "--",
     ...launcher,
@@ -43,6 +32,7 @@ export async function installClient(
     platform = process.platform,
     spawn = spawnSync,
     resolveClient = resolveClientExecutable,
+    configureDesktop = configureClaudeDesktop,
     openBrowser = openSetupPage,
     prompt = promptSecret,
     verifyKey = verifyWorkspaceKey,
@@ -50,9 +40,13 @@ export async function installClient(
     interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   } = {},
 ) {
-  if (!CLIENTS.has(client)) throw new Error("client must be codex or claude");
-  write(`Finding ${client === "codex" ? "Codex" : "Claude Code"}...\n`);
+  if (!CLIENTS.has(client) && client !== "claude-desktop") throw new Error("client must be codex, claude or claude-desktop");
+  write(`Finding ${client === "codex" ? "Codex" : "Claude"}...\n`);
   const executable = resolveClient(client, { platform });
+  if (executable.desktop) {
+    checkClaudeDesktopConfiguration(executable.configPath);
+    write("Found Claude desktop. Connecting without a separate Claude Code CLI.\n");
+  }
   let key = apiKey?.trim();
   let setupShown = false;
   let registration;
@@ -60,7 +54,7 @@ export async function installClient(
   while (true) {
     if (!key) {
       if (!setupShown) {
-        write(`${setupInstructions(client)}\n\n`);
+        write(`${setupInstructions(executable.desktop ? "claude-desktop" : client)}\n\n`);
         if (interactive) {
           write("Opening your browser setup page...\n");
           openBrowser();
@@ -79,7 +73,7 @@ export async function installClient(
       continue;
     }
     // Validate the origin before sending a key, even when setup needs a retry.
-    registration = registrationCommand(client, key, apiUrl, platform);
+    registration = registrationCommand(client === "claude-desktop" ? "claude" : client, key, apiUrl, platform);
     write("Checking your Caelario connection key...\n");
     try {
       await verifyKey(key, apiUrl);
@@ -89,6 +83,11 @@ export async function installClient(
       write("Caelario did not accept that key. Let's connect with a current key from browser setup.\n");
       key = "";
     }
+  }
+  if (executable.desktop) {
+    configureDesktop(key, apiUrl, { configPath: executable.configPath, platform });
+    write("Caelario is configured for Claude desktop, including local Code sessions. Quit Claude completely and reopen it, approve the Caelario connection if asked, then ask it to use Caelario.\n");
+    return;
   }
   const completed = spawn(executable.command, registration.args, {
     stdio: "pipe",
@@ -147,7 +146,8 @@ export function printHelp() {
     "Caelario MCP",
     "",
     "  npx -y caelario-mcp install codex   Register for Codex (user-wide)",
-    "  npx -y caelario-mcp install claude  Register for Claude Code (user-wide)",
+    "  npx -y caelario-mcp install claude  Connect Claude Code or detect Claude desktop",
+    "  npx -y caelario-mcp install claude-desktop  Connect Claude desktop explicitly",
     "  npx -y caelario-mcp serve           Run the stdio server",
     "",
     setupInstructions(),

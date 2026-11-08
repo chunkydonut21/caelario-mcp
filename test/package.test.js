@@ -435,7 +435,7 @@ test("Windows CLI shim with spaces is quoted and checked before registration", (
       assert.equal(command, `"${shim}"`);
       assert.equal(options.shell, true);
       assert.deepEqual(args, ["--version"]);
-      return { status: 0 };
+      return { status: 0, stdout: "2.1.0 (Claude Code)" };
     },
   });
   assert.deepEqual(found, { command: `"${shim}"`, shell: true });
